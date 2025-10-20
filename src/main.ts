@@ -115,10 +115,13 @@ const processVideo = async () => {
                 console.log(`  Failed frames: ${failedFrames.slice(0, 5).join(', ')}${failedFrames.length > 5 ? ` and ${failedFrames.length - 5} more` : ''}`);
             }
         } finally {
+            console.log('\n🔧 Terminating worker pool...');
             await Frame.terminateWorkerPool();
+            console.log('✓ Worker pool terminated');
         }
 
         // Step 3: Encode video from processed frames
+        console.log('\n📹 Step 3: Starting video encoding...');
         const processedFrameFiles = await fs.promises.readdir(FRAMES_OUT_DIR);
         const validFrames = processedFrameFiles.filter(f => f.endsWith('.png'));
 
@@ -184,17 +187,19 @@ const processVideo = async () => {
 
 
 (async () => {
-const startTime = Date.now();
+    const startTime = Date.now();
 
-// const [firstArg] = process.argv;
+    try {
+        await processVideo();
 
-await processVideo();
+        const endTime = Date.now();
+        const durationMs = endTime - startTime;
+        const durationSec = (durationMs / 1000).toFixed(1);
 
-const endTime = Date.now();
-
-const durationMs = endTime - startTime;
-
-console.log({
-    durationMs
-})
+        console.log(`\n⏱️  Total time: ${durationSec}s (${(durationMs / 60000).toFixed(1)} minutes)`);
+    } catch (error) {
+        console.error('\n💥 Fatal error during video processing:');
+        console.error(error);
+        process.exit(1);
+    }
 })();
