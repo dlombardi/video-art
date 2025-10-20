@@ -115,9 +115,9 @@ const processVideo = async () => {
                 console.log(`  Failed frames: ${failedFrames.slice(0, 5).join(', ')}${failedFrames.length > 5 ? ` and ${failedFrames.length - 5} more` : ''}`);
             }
         } finally {
-            console.log('\n🔧 Terminating worker pool...');
-            await Frame.terminateWorkerPool();
-            console.log('✓ Worker pool terminated');
+            // Skip worker pool termination - threads library hangs with Bun
+            // Workers will be cleaned up when process exits
+            console.log('\n✓ Frame processing complete (skipping worker cleanup)');
         }
 
         // Step 3: Encode video from processed frames
