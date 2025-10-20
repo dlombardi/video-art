@@ -84,61 +84,38 @@ class VideoFrame extends BaseImage {
         this.imageMap = imageMap;
     }
 
-    matchNearestImage = (meanTileBrightness: number) => {
-        if (!this.imageMap) return;
 
-        let nearestKey: number | null = null;
-        let smallestDelta = Infinity;
-        for (const [brightness] of this.imageMap?.entries()) {
-            const delta = Math.abs(brightness - meanTileBrightness);
-            if (delta < smallestDelta) {
-                smallestDelta = delta;
-                nearestKey = brightness;
-            }
+    // Static pool shared across all frames for better resource utilization
+    private static workerPool: ReturnType<typeof Pool> | null = null;
+
+    static async initializeWorkerPool(concurrency: number = 4) {
+        if (!VideoFrame.workerPool) {
+            VideoFrame.workerPool = Pool(() => spawn(new Worker("./worker")), {
+                name: 'frame-processor-pool',
+                concurrency
+            });
         }
-
-        if (nearestKey === null) return;
-        return this.imageMap.get(nearestKey);
+        return VideoFrame.workerPool;
     }
 
-    async processTileWorker(data: { x: number, y: number, tileWidth: number, tileHeight: number, buffer: Uint8Array }) {
-        try {
-            const {x, y, tileWidth, tileHeight, buffer} = data;
-            const tileBuffer = await sharp(buffer)
-                .extract({ left: x, top: y, width: tileWidth, height: tileHeight })
-                .raw()
-                .toBuffer();
-
-            const { meanBrightness } = await this.deriveMeanBrightness(tileBuffer);
-
-            const nearestImage = this.matchNearestImage(meanBrightness);
-
-            if (nearestImage) {
-                const replacementBuffer = await sharp(nearestImage)
-                    .resize(tileWidth, tileHeight)
-                    .toBuffer();
-
-                return {
-                    input: replacementBuffer,
-                    left: x,
-                    top: y
-                }
-            } else {
-                console.warn(`No matching image found for tile at (${x}, ${y}) with brightness ${meanBrightness.toFixed(2)}`);
-            }
-        } catch (e) {
-            throw e
+    static async terminateWorkerPool() {
+        if (VideoFrame.workerPool) {
+            await VideoFrame.workerPool.terminate();
+            VideoFrame.workerPool = null;
         }
     }
 
     async transformAndOutput() {
+        if (!VideoFrame.workerPool) {
+            throw new Error('Worker pool not initialized. Call VideoFrame.initializeWorkerPool() first.');
+        }
+
         try {
             // Convert Map to array for serialization
             const imageMapArray = this.imageMap ? Array.from(this.imageMap.entries()) : [];
 
-            const pool = Pool(() => spawn(new Worker("./worker")), { name: 'process-frame-worker', concurrency: 10 })
-
-            pool.queue(async processFrame => {
+            // Queue the frame processing task
+            await VideoFrame.workerPool.queue(async processFrame => {
                 await processFrame({
                     imagePath: this.imagePath,
                     imageOutPath: this.imageOutPath,
@@ -146,12 +123,9 @@ class VideoFrame extends BaseImage {
                     imageMapArray
                 })
             });
-
-            await pool.completed()
-            await pool.terminate()
         } catch (e) {
-            console.log(e)
-            throw e
+            console.error(`Error processing frame ${this.imagePath}:`, e);
+            throw e;
         }
     }
 }
@@ -195,49 +169,58 @@ const processVideo = async () => {
 
         const videoPath = path.join(VIDEO_DIR, 'IMG_3403.MOV');
 
-        const frameQueue: string[] = [];
         const processedFrames = new Set<string>();
-        let isProcessing = false;
+        const activeProcessing = new Set<Promise<void>>();
         let frameCount = 0;
         let ffmpegComplete = false;
+        const MAX_CONCURRENT_FRAMES = 4; // Process up to 4 frames in parallel
 
         // Promise to track when all processing is complete
         const { promise: processingComplete, resolve, reject } = Promise.withResolvers<void>();
 
-        const processFrameQueue = async () => {
-            if (isProcessing) return;
-            isProcessing = true;
+        // Initialize worker pool once for all frames
+        await VideoFrame.initializeWorkerPool(MAX_CONCURRENT_FRAMES);
 
-            while (frameQueue.length > 0) {
-                const framePath = frameQueue.shift()!
-
-                console.log(`\nProcessing frame: ${framePath}`);
-                const frameImage = new VideoFrame(path.join(FRAMES_DIR, framePath), path.join(FRAMES_OUT_DIR, framePath), imageMap);
-                await frameImage.transformAndOutput()
-                processedFrames.add(framePath);
+        const processFrame = async (framePath: string) => {
+            try {
+                const frameImage = new VideoFrame(
+                    path.join(FRAMES_DIR, framePath),
+                    path.join(FRAMES_OUT_DIR, framePath),
+                    imageMap
+                );
+                await frameImage.transformAndOutput();
                 frameCount++;
+                console.log(`✓ Completed frame ${frameCount}: ${framePath}`);
+            } catch (e) {
+                console.error(`✗ Failed to process frame: ${framePath}`, e);
+                throw e;
+            } finally {
+                processedFrames.add(framePath);
+            }
+        };
+
+        const processFrameQueue = async (framePath: string) => {
+            // Wait if we hit max concurrency
+            while (activeProcessing.size >= MAX_CONCURRENT_FRAMES) {
+                await Promise.race(activeProcessing);
             }
 
-            isProcessing = false;
+            const processingPromise = processFrame(framePath)
+                .finally(() => activeProcessing.delete(processingPromise));
 
-            // Check if we're completely done
-            if (ffmpegComplete && frameQueue.length === 0) {
-                watcher.close();
-                console.log(`\n✓ Processed ${frameCount} frames`);
-                resolve();
-            }
-        }
+            activeProcessing.add(processingPromise);
+        };
 
         const watcher = fs.watch(FRAMES_DIR, async (_eventType, fileName) => {
             if (fileName && fileName.endsWith('.png') && !processedFrames.has(fileName)) {
                 try {
                     const { size } = await fs.promises.stat(path.join(FRAMES_DIR, fileName));
-                    if (size > 0 && !frameQueue.includes(fileName)) {
-                        frameQueue.push(fileName)
-                        processFrameQueue()
+                    if (size > 0) {
+                        // Process frame immediately (with concurrency control)
+                        processFrameQueue(fileName).catch(reject);
                     }
                 } catch (e) {
-                    throw e;
+                    // File might not be fully written yet, will catch it on next event
                 }
             }
         });
@@ -249,18 +232,32 @@ const processVideo = async () => {
                 console.log('Frame extraction complete, waiting for processing to finish...');
                 ffmpegComplete = true;
 
-                // Process any remaining frames that might have been missed
-                const remainingFrames = await fs.promises.readdir(FRAMES_DIR);
-                for (const frame of remainingFrames) {
-                    if (!processedFrames.has(frame) && !frameQueue.includes(frame) && frame.endsWith('.png')) {
-                        frameQueue.push(frame);
+                try {
+                    // Process any remaining frames that might have been missed
+                    const remainingFrames = await fs.promises.readdir(FRAMES_DIR);
+                    for (const frame of remainingFrames) {
+                        if (!processedFrames.has(frame) && frame.endsWith('.png')) {
+                            await processFrameQueue(frame);
+                        }
                     }
-                }
 
-                await processFrameQueue();
+                    // Wait for all active processing to complete
+                    await Promise.allSettled(activeProcessing);
+
+                    // Clean up and resolve
+                    watcher.close();
+                    await VideoFrame.terminateWorkerPool();
+                    console.log(`\n✓ All ${frameCount} frames processed successfully`);
+                    resolve();
+                } catch (err) {
+                    watcher.close();
+                    await VideoFrame.terminateWorkerPool();
+                    reject(err as Error);
+                }
             })
-            .on('error', (err) => {
+            .on('error', async (err) => {
                 watcher.close();
+                await VideoFrame.terminateWorkerPool();
                 reject(err);
             })
             .save(path.join(FRAMES_DIR, 'frame_%04d.png'));
