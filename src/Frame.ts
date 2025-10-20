@@ -33,8 +33,25 @@ export default class Frame extends BaseImage {
 
     static async terminateWorkerPool() {
         if (Frame.workerPool) {
-            await Frame.workerPool.terminate();
-            Frame.workerPool = null;
+            try {
+                console.log('  Waiting for all workers to complete...');
+                // First ensure all queued tasks are completed
+                await Frame.workerPool.completed();
+                console.log('  All workers completed, terminating pool...');
+
+                // Then terminate with timeout
+                const terminatePromise = Frame.workerPool.terminate();
+                const timeoutPromise = new Promise<void>((_, reject) =>
+                    setTimeout(() => reject(new Error('Worker pool termination timed out')), 5000)
+                );
+
+                await Promise.race([terminatePromise, timeoutPromise]);
+                Frame.workerPool = null;
+            } catch (e) {
+                console.warn('⚠️  Worker pool termination failed or timed out:', e);
+                // Force set to null anyway to prevent re-use
+                Frame.workerPool = null;
+            }
         }
     }
 
