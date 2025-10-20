@@ -134,14 +134,16 @@ const processVideo = async () => {
         }
 
         await new Promise((resolve, reject) => {
-            ffmpeg()
+            const command = ffmpeg()
                 .input(path.join(FRAMES_OUT_DIR, 'frame_%04d.png'))
                 .inputFPS(30)
                 .outputFPS(30)
                 .videoCodec('libx264')
                 .outputOptions([
                     '-pix_fmt yuv420p',
-                    '-crf 18'
+                    '-crf 18',
+                    '-preset fast',           // Faster encoding, less memory
+                    '-max_muxing_queue_size 1024'  // Limit buffer size
                 ])
                 .on('start', (commandLine) => {
                     console.log('\n🎥 FFmpeg encoding started...');
@@ -159,9 +161,21 @@ const processVideo = async () => {
                 })
                 .on('error', (err) => {
                     console.error('\n❌ Error creating video:', err);
+                    console.error('Error details:', err.message || err);
                     reject(err);
-                })
-                .save(path.join(VIDEO_OUT, 'artistic_video.mp4'));
+                });
+
+            // Kill ffmpeg if it's taking too long or hanging
+            const timeout = setTimeout(() => {
+                console.error('\n⏱️  FFmpeg encoding timed out after 5 minutes');
+                command.kill('SIGKILL');
+                reject(new Error('FFmpeg encoding timeout'));
+            }, 5 * 60 * 1000); // 5 minute timeout
+
+            command.on('end', () => clearTimeout(timeout));
+            command.on('error', () => clearTimeout(timeout));
+
+            command.save(path.join(VIDEO_OUT, 'artistic_video.mp4'));
         });
     } catch (e) {
         throw e;

@@ -53,7 +53,7 @@ expose(async function processFrame({
         // Precompute grayscale once with error handling
         grayscaleImage = sharp(imageBuffer)
             .grayscale()
-            .linear(1.8, -60);
+            .linear(2.0, -80);
 
         const grayscalePngBuffer = await grayscaleImage.raw().toBuffer();
 
