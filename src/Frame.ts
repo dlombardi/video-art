@@ -16,16 +16,17 @@ export default class Frame extends BaseImage {
 
     static async initializeWorkerPool(concurrency?: number) {
         if (!Frame.workerPool) {
-            // Default to CPU core count minus 1 for optimal parallelism (leave one core for system/main thread)
             const cpuCount = os.cpus().length;
-            const optimalConcurrency = concurrency || Math.max(1, cpuCount - 1);
+            // Conservative: Cap at 4 workers to prevent Sharp resource exhaustion
+            // Each worker creates multiple Sharp instances, so too many workers = system overload
+            const optimalConcurrency = concurrency || Math.min(4, Math.max(2, cpuCount - 2));
 
             Frame.workerPool = Pool(() => spawn(new Worker("./worker")), {
                 name: 'frame-processor-pool',
                 concurrency: optimalConcurrency
             });
 
-            console.log(`Initialized worker pool with ${optimalConcurrency} workers (${cpuCount} CPU cores detected)`);
+            console.log(`Initialized worker pool with ${optimalConcurrency} workers (${cpuCount} CPU cores detected, capped at 4 for stability)`);
         }
         return Frame.workerPool;
     }

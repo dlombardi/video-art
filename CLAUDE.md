@@ -1,111 +1,107 @@
----
-description: Use Bun instead of Node.js, npm, pnpm, or vite.
-globs: "*.ts, *.tsx, *.html, *.css, *.js, *.jsx, package.json"
-alwaysApply: false
----
+# CLAUDE.md
 
-Default to using Bun instead of Node.js.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-- Use `bun <file>` instead of `node <file>` or `ts-node <file>`
-- Use `bun test` instead of `jest` or `vitest`
-- Use `bun build <file.html|file.ts|file.css>` instead of `webpack` or `esbuild`
-- Use `bun install` instead of `npm install` or `yarn install` or `pnpm install`
-- Use `bun run <script>` instead of `npm run <script>` or `yarn run <script>` or `pnpm run <script>`
-- Bun automatically loads .env, so don't use dotenv.
+## Project Overview
 
-## APIs
+This is an image-to-video art project that processes videos by replacing tiles with images based on brightness matching. The main workflow:
 
-- `Bun.serve()` supports WebSockets, HTTPS, and routes. Don't use `express`.
-- `bun:sqlite` for SQLite. Don't use `better-sqlite3`.
-- `Bun.redis` for Redis. Don't use `ioredis`.
-- `Bun.sql` for Postgres. Don't use `pg` or `postgres.js`.
-- `WebSocket` is built-in. Don't use `ws`.
-- Prefer `Bun.file` over `node:fs`'s readFile/writeFile
-- Bun.$`ls` instead of execa.
+1. Extract frames from a video using ffmpeg
+2. Process reference images to normalize size and calculate mean brightness
+3. For each video frame, split into tiles and replace each tile with the reference image that has the closest matching brightness
+4. Output the processed frames
 
-## Testing
+**Key Technologies:**
+- Bun runtime (not Node.js)
+- Sharp for image processing
+- fluent-ffmpeg for video frame extraction
+- TypeScript
 
-Use `bun test` to run tests.
+## Development Commands
 
-```ts#index.test.ts
-import { test, expect } from "bun:test";
-
-test("hello world", () => {
-  expect(1).toBe(1);
-});
+**Run the main script:**
+```bash
+bun run start
+# or
+bun ./src/index.ts
 ```
 
-## Frontend
-
-Use HTML imports with `Bun.serve()`. Don't use `vite`. HTML imports fully support React, CSS, Tailwind.
-
-Server:
-
-```ts#index.ts
-import index from "./index.html"
-
-Bun.serve({
-  routes: {
-    "/": index,
-    "/api/users/:id": {
-      GET: (req) => {
-        return new Response(JSON.stringify({ id: req.params.id }));
-      },
-    },
-  },
-  // optional websocket support
-  websocket: {
-    open: (ws) => {
-      ws.send("Hello, world!");
-    },
-    message: (ws, message) => {
-      ws.send(message);
-    },
-    close: (ws) => {
-      // handle close
-    }
-  },
-  development: {
-    hmr: true,
-    console: true,
-  }
-})
+**Install dependencies:**
+```bash
+bun install
 ```
 
-HTML files can import .tsx, .jsx or .js files directly and Bun's bundler will transpile & bundle automatically. `<link>` tags can point to stylesheets and Bun's CSS bundler will bundle.
-
-```html#index.html
-<html>
-  <body>
-    <h1>Hello, world!</h1>
-    <script type="module" src="./frontend.tsx"></script>
-  </body>
-</html>
+**Run tests (when added):**
+```bash
+bun test
 ```
 
-With the following `frontend.tsx`:
+## Architecture
 
-```tsx#frontend.tsx
-import React from "react";
+**Entry Point:** `src/index.ts`
 
-// import .css files directly and it works
-import './index.css';
+**Core Classes:**
 
-import { createRoot } from "react-dom/client";
+- `BaseImage` - Abstract base class with shared image processing utilities
+  - `deriveMeanBrightness()` - Calculates mean brightness from grayscale data
 
-const root = createRoot(document.body);
+- `SwapImage` - Processes reference images for the brightness mapping
+  - Normalizes images to 700x700
+  - Calculates mean brightness for matching
+  - Outputs processed images to `video-images-processed/`
 
-export default function Frontend() {
-  return <h1>Hello, world!</h1>;
-}
+- `VideoFrame` - Processes individual video frames
+  - Splits frames into tiles (default 16x16 pixels, set by `TILE_SIZE`)
+  - Matches each tile to nearest brightness reference image
+  - Uses concurrent tile processing with max 10 in-flight operations
+  - Composites all replacement tiles into final frame
 
-root.render(<Frontend />);
-```
+- `Sem` - Simple semaphore for concurrency control
 
-Then, run index.ts
+**Directory Structure:**
+- `./video-images/` - Input reference images
+- `./video-images-processed/` - Processed reference images
+- `./frames/` - Extracted video frames
+- `./frames-processed/` - Processed video frames with tile replacements
+- `./video/` - Input video files
+- `./video-out/` - Output processed videos
 
-```sh
-bun --hot ./index.ts
-```
+## Important Implementation Details
 
-For more information, read the Bun API docs in `node_modules/bun-types/docs/**.md`.
+**Image Processing:**
+- All reference images are normalized to 700x700 before processing
+- Brightness matching uses grayscale conversion and mean pixel value
+- Tile processing is parallelized with a max concurrency of 10
+
+**Video Processing:**
+- Frame extraction is currently commented out (lines 278-284)
+- Target framerate: 30fps
+- Hardcoded video path: `./video/IMG_3403.MOV`
+
+**Brightness Matching Algorithm:**
+- Images stored in a Map with brightness as key, file path as value
+- `matchNearestImage()` finds the smallest positive delta above the target brightness
+- Note: Current algorithm only matches images brighter than the target (potential improvement area)
+
+## Bun-Specific Notes
+
+- Use `bun ./src/index.ts` instead of `node ./src/index.ts`
+- Bun automatically loads .env files (no dotenv needed)
+- Prefer `Bun.file()` over Node.js fs when possible
+- Use `bun:test` for testing framework
+
+## Common Tasks
+
+**Adding new image transformations:**
+- Extend `BaseImage` or modify `SwapImage`/`VideoFrame` classes
+- Image processing happens in `transformAndOutput()` methods
+
+**Adjusting tile size:**
+- Modify the `TILE_SIZE` constant (line 13)
+
+**Changing concurrency:**
+- Modify `MAX_IN_FLIGHT` constant in `VideoFrame.transformAndOutput()` (line 183)
+
+**Processing different videos:**
+- Update the hardcoded video path in `processVideo()` (line 274)
+- Uncomment the ffmpeg frame extraction code (lines 278-284) if needed

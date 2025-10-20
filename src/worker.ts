@@ -5,6 +5,11 @@ import sharp from 'sharp';
 
 import { deriveMeanBrightness, matchNearestImage } from './helpers.ts';
 
+// Limit Sharp's internal concurrency to prevent resource exhaustion
+// With multiple workers, we need to be conservative
+sharp.concurrency(1); // Process one Sharp operation at a time per worker
+sharp.cache({ memory: 50, files: 0, items: 20 }); // Limit cache size
+
 // Cache for resized reference images to avoid repeated disk I/O and processing
 const imageCache = new Map<string, Buffer>();
 
@@ -32,21 +37,25 @@ expose(async function processFrame({
     TILE_SIZE: number;
     imageMapArray: Array<[number, string]>;
 }) {
+    let grayscaleImage;
+    let processedImage;
+
     try {
         // Read frame from disk
         const imageBuffer = await fs.promises.readFile(imagePath);
-        const { width, height } = await sharp(imageBuffer).metadata();
+        const metadata = await sharp(imageBuffer).metadata();
+        const { width, height } = metadata;
 
         if (!width || !height) {
             throw new Error("Failed to get image dimensions.");
         }
 
-        // Precompute grayscale once
-        const grayscalePngBuffer = await sharp(imageBuffer)
+        // Precompute grayscale once with error handling
+        grayscaleImage = sharp(imageBuffer)
             .grayscale()
-            .linear(1.8, -60)
-            .raw()
-            .toBuffer(); // Use raw buffer instead of PNG, saves decode per tile
+            .linear(1.8, -60);
+
+        const grayscalePngBuffer = await grayscaleImage.raw().toBuffer();
 
         const tilesX = Math.ceil(width / TILE_SIZE);
         const tilesY = Math.ceil(height / TILE_SIZE);
@@ -129,6 +138,23 @@ expose(async function processFrame({
         console.log("  Saving processed frame...");
         await processedImage.png().toFile(imageOutPath);
     } catch (e) {
-        throw e
+        console.error(`Failed to process frame ${imagePath}:`, e);
+        throw e;
+    } finally {
+        // Clean up Sharp instances to prevent memory leaks
+        if (grayscaleImage) {
+            try {
+                grayscaleImage.destroy();
+            } catch (e) {
+                // Ignore cleanup errors
+            }
+        }
+        if (processedImage) {
+            try {
+                processedImage.destroy();
+            } catch (e) {
+                // Ignore cleanup errors
+            }
+        }
     }
 })

@@ -73,17 +73,10 @@ const processVideo = async () => {
                 );
                 await frameImage.transformAndOutput();
                 frameCount++;
-
-                // Log memory usage every 10 frames
-                if (frameCount % 10 === 0) {
-                    const memUsage = process.memoryUsage();
-                    console.log(`✓ Completed ${frameCount} frames | Memory: ${(memUsage.heapUsed / 1024 / 1024).toFixed(0)}MB / ${(memUsage.heapTotal / 1024 / 1024).toFixed(0)}MB`);
-                } else {
-                    console.log(`✓ Completed frame ${frameCount}: ${framePath}`);
-                }
             } catch (e) {
                 console.error(`✗ Failed to process frame: ${framePath}`, e);
-                throw e;
+                // Don't throw - continue processing other frames
+                // The frame will be marked as processed to avoid retry loops
             } finally {
                 processedFrames.add(framePath);
             }
@@ -95,7 +88,7 @@ const processVideo = async () => {
                     const { size } = await fs.promises.stat(path.join(FRAMES_DIR, fileName));
                     if (size > 0) {
                         // Queue frame processing - worker pool handles concurrency automatically
-                        const promise = processFrame(fileName).catch(reject);
+                        const promise = processFrame(fileName);
                         frameProcessingPromises.push(promise);
                     }
                 } catch (e) {
@@ -115,7 +108,7 @@ const processVideo = async () => {
                     const remainingFrames = await fs.promises.readdir(FRAMES_DIR);
                     for (const frame of remainingFrames) {
                         if (!processedFrames.has(frame) && frame.endsWith('.png')) {
-                            const promise = processFrame(frame).catch(reject);
+                            const promise = processFrame(frame);
                             frameProcessingPromises.push(promise);
                         }
                     }
