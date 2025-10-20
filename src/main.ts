@@ -56,7 +56,9 @@ const processVideo = async () => {
 
         const processedFrames = new Set<string>();
         const frameProcessingPromises: Promise<void>[] = [];
+        const failedFrames: string[] = [];
         let frameCount = 0;
+        let successCount = 0;
 
         // Promise to track when all processing is complete
         const { promise: processingComplete, resolve, reject } = Promise.withResolvers<void>();
@@ -72,12 +74,21 @@ const processVideo = async () => {
                     swapImageMap
                 );
                 await frameImage.transformAndOutput();
-                frameCount++;
+                successCount++;
+
+                // Log progress
+                if (successCount % 10 === 0) {
+                    const memUsage = process.memoryUsage();
+                    console.log(`✓ Completed ${successCount} frames | Memory: ${(memUsage.heapUsed / 1024 / 1024).toFixed(0)}MB / ${(memUsage.heapTotal / 1024 / 1024).toFixed(0)}MB`);
+                } else {
+                    console.log(`✓ Completed frame ${successCount}: ${framePath}`);
+                }
             } catch (e) {
                 console.error(`✗ Failed to process frame: ${framePath}`, e);
+                failedFrames.push(framePath);
                 // Don't throw - continue processing other frames
-                // The frame will be marked as processed to avoid retry loops
             } finally {
+                frameCount++;
                 processedFrames.add(framePath);
             }
         };
@@ -119,7 +130,16 @@ const processVideo = async () => {
                     // Clean up and resolve
                     watcher.close();
                     await Frame.terminateWorkerPool();
-                    console.log(`\n✓ All ${frameCount} frames processed successfully`);
+
+                    console.log(`\n📊 Processing Summary:`);
+                    console.log(`  Total frames: ${frameCount}`);
+                    console.log(`  Successful: ${successCount}`);
+                    console.log(`  Failed: ${failedFrames.length}`);
+
+                    if (failedFrames.length > 0) {
+                        console.log(`  Failed frames: ${failedFrames.slice(0, 5).join(', ')}${failedFrames.length > 5 ? ` and ${failedFrames.length - 5} more` : ''}`);
+                    }
+
                     resolve();
                 } catch (err) {
                     watcher.close();
@@ -137,6 +157,21 @@ const processVideo = async () => {
         // Wait for all frame processing to complete
         await processingComplete;
 
+        // Check if we have enough frames to create a video
+        const processedFrameFiles = await fs.promises.readdir(FRAMES_OUT_DIR);
+        const validFrames = processedFrameFiles.filter(f => f.endsWith('.png'));
+
+        console.log(`\n🎬 Creating video from ${validFrames.length} processed frames...`);
+
+        if (validFrames.length === 0) {
+            console.error('❌ No processed frames found! Cannot create video.');
+            throw new Error('No processed frames available for video creation');
+        }
+
+        if (failedFrames.length > 0 && failedFrames.length / frameCount > 0.1) {
+            console.warn(`⚠️  Warning: ${((failedFrames.length / frameCount) * 100).toFixed(1)}% of frames failed. Video may have gaps or artifacts.`);
+        }
+
         await new Promise((resolve, reject) => {
             ffmpeg()
                 .input(path.join(FRAMES_OUT_DIR, 'frame_%04d.png'))
@@ -148,19 +183,21 @@ const processVideo = async () => {
                     '-crf 18'
                 ])
                 .on('start', (commandLine) => {
-                    console.log('FFmpeg process started:', commandLine);
+                    console.log('\n🎥 FFmpeg encoding started...');
+                    console.log(`Command: ${commandLine}`);
                 })
                 .on('progress', (progress) => {
                     if (progress.percent) {
-                        console.log(`Video creation: ${progress.percent.toFixed(1)}% done`);
+                        console.log(`  Encoding: ${progress.percent.toFixed(1)}% complete`);
                     }
                 })
                 .on('end', () => {
-                    console.log('Video creation completed successfully!');
+                    console.log('\n✅ Video creation completed successfully!');
+                    console.log(`📹 Output: ${path.join(VIDEO_OUT, 'artistic_video.mp4')}`);
                     resolve(undefined);
                 })
                 .on('error', (err) => {
-                    console.error('Error creating video:', err);
+                    console.error('\n❌ Error creating video:', err);
                     reject(err);
                 })
                 .save(path.join(VIDEO_OUT, 'artistic_video.mp4'));
