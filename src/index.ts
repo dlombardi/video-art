@@ -11,8 +11,7 @@ const IMAGES_OUT_DIR = path.join(__dirname, `./video-images-processed`);
 const VIDEO_DIR = path.join(__dirname, `./video`);
 const VIDEO_OUT = path.join(__dirname, `./video-out`);
 
-const TILE_SIZE = 100;
-
+const TILE_SIZE = 120;
 
 class BaseImage {
     imagePath: string = '';
@@ -141,9 +140,11 @@ const processImage = async (imagePath: string) => {
 
 const processVideo = async () => {
     try {
+        // Reset frames dir
         await fs.promises.rm(FRAMES_DIR, { recursive: true, force: true });
         await fs.promises.mkdir(FRAMES_DIR);
 
+        // Reset frames out dir
         await fs.promises.rm(FRAMES_OUT_DIR, { recursive: true, force: true });
         await fs.promises.mkdir(FRAMES_OUT_DIR);
 
@@ -172,8 +173,7 @@ const processVideo = async () => {
         const processedFrames = new Set<string>();
         const activeProcessing = new Set<Promise<void>>();
         let frameCount = 0;
-        let ffmpegComplete = false;
-        const MAX_CONCURRENT_FRAMES = 4; // Process up to 4 frames in parallel
+        const MAX_CONCURRENT_FRAMES = 3; // Process up to 3 frames in parallel (conservative to avoid memory issues)
 
         // Promise to track when all processing is complete
         const { promise: processingComplete, resolve, reject } = Promise.withResolvers<void>();
@@ -190,7 +190,14 @@ const processVideo = async () => {
                 );
                 await frameImage.transformAndOutput();
                 frameCount++;
-                console.log(`✓ Completed frame ${frameCount}: ${framePath}`);
+
+                // Log memory usage every 10 frames
+                if (frameCount % 10 === 0) {
+                    const memUsage = process.memoryUsage();
+                    console.log(`✓ Completed ${frameCount} frames | Memory: ${(memUsage.heapUsed / 1024 / 1024).toFixed(0)}MB / ${(memUsage.heapTotal / 1024 / 1024).toFixed(0)}MB`);
+                } else {
+                    console.log(`✓ Completed frame ${frameCount}: ${framePath}`);
+                }
             } catch (e) {
                 console.error(`✗ Failed to process frame: ${framePath}`, e);
                 throw e;
@@ -230,7 +237,6 @@ const processVideo = async () => {
             .fps(30) // Extract at 30fps
             .on('end', async () => {
                 console.log('Frame extraction complete, waiting for processing to finish...');
-                ffmpegComplete = true;
 
                 try {
                     // Process any remaining frames that might have been missed

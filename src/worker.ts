@@ -23,7 +23,7 @@ function matchNearestImage(meanTileBrightness: number, imageMapArray: Array<[num
     let nearestKey: number | null = null;
     let smallestDelta = Infinity;
 
-    for (const [brightness, imagePath] of imageMapArray) {
+    for (const [brightness, _imagePath] of imageMapArray) {
         const delta = Math.abs(brightness - meanTileBrightness);
         if (delta < smallestDelta) {
             smallestDelta = delta;
@@ -97,13 +97,20 @@ expose(async function processFrame({
         const compositeOperations: Array<{input: Buffer, left: number, top: number}> = [];
         const totalTiles = tilesX * tilesY;
 
-        const promises: Promise<any>[] = [];
         let completedTiles = 0;
         let lastLogged = 0;
+        const MAX_CONCURRENT_TILES = 50; // Limit concurrent tile operations to prevent memory exhaustion
 
-        // CRITICAL FIX: Build ALL tile promises first, then await once
+        // Process tiles with concurrency control
+        const activeTiles = new Set<Promise<void>>();
+
         for (let tileY = 0; tileY < tilesY; tileY++) {
             for (let tileX = 0; tileX < tilesX; tileX++) {
+                // Wait if we hit max concurrency
+                while (activeTiles.size >= MAX_CONCURRENT_TILES) {
+                    await Promise.race(activeTiles);
+                }
+
                 const x = tileX * TILE_SIZE;
                 const y = tileY * TILE_SIZE;
                 const tileWidth = Math.min(TILE_SIZE, width - x);
@@ -124,41 +131,40 @@ expose(async function processFrame({
                     );
                 }
 
-                // Kick off tile processing right away
-                // Note: pass raw tile buffer, not the PNG
-                promises.push(
-                    (async () => {
-                        try {
-                            const { meanBrightness } = await deriveMeanBrightness(tileRaw);
-                            const nearestImage = matchNearestImage(meanBrightness, imageMapArray);
+                // Process tile with concurrency control
+                const tilePromise = (async () => {
+                    try {
+                        const { meanBrightness } = await deriveMeanBrightness(tileRaw);
+                        const nearestImage = matchNearestImage(meanBrightness, imageMapArray);
 
-                            if (nearestImage) {
-                                // Use cached resized image instead of loading/resizing every time
-                                const replacementBuffer = await getCachedResizedImage(nearestImage, tileWidth, tileHeight);
-                                compositeOperations.push({
-                                    input: replacementBuffer,
-                                    left: x,
-                                    top: y
-                                });
-                            }
-                        } catch(e) {
-                            // Optionally handle missing-nearestImage, log elsewhere
-                        } finally {
-                            completedTiles++;
-                            // Log once every 5%
-                            const p = Math.floor((completedTiles/totalTiles)*20);
-                            if (p !== lastLogged) {
-                                lastLogged = p;
-                                console.log(`  ${(completedTiles/totalTiles*100).toFixed(0)}% of tiles`);
-                            }
+                        if (nearestImage) {
+                            // Use cached resized image instead of loading/resizing every time
+                            const replacementBuffer = await getCachedResizedImage(nearestImage, tileWidth, tileHeight);
+                            compositeOperations.push({
+                                input: replacementBuffer,
+                                left: x,
+                                top: y
+                            });
                         }
-                    })()
-                );
+                    } catch(e) {
+                        console.error(`Error processing tile at (${x}, ${y}):`, e);
+                    } finally {
+                        completedTiles++;
+                        // Log once every 10%
+                        const p = Math.floor((completedTiles/totalTiles)*10);
+                        if (p !== lastLogged) {
+                            lastLogged = p;
+                            console.log(`  ${(completedTiles/totalTiles*100).toFixed(0)}% of tiles`);
+                        }
+                    }
+                })().finally(() => activeTiles.delete(tilePromise));
+
+                activeTiles.add(tilePromise);
             }
         }
 
-        // CRITICAL FIX: Await ALL tiles AFTER loop (enables true parallelism)
-        await Promise.allSettled(promises);
+        // Wait for all remaining tiles to complete
+        await Promise.allSettled(activeTiles);
 
         console.log(`  Applying ${compositeOperations.length} composite operations...`);
         console.log(`  Match rate: ${compositeOperations.length}/${totalTiles} tiles (${Math.round(compositeOperations.length/totalTiles*100)}%)`);
