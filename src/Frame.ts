@@ -48,7 +48,7 @@ export default class Frame extends BaseImage {
                 await Promise.race([terminatePromise, timeoutPromise]);
                 Frame.workerPool = null;
             } catch (e) {
-                console.warn('⚠️  Worker pool termination failed or timed out:', e);
+                console.warn('Worker pool termination failed or timed out:', e);
                 // Force set to null anyway to prevent re-use
                 Frame.workerPool = null;
             }

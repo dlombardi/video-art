@@ -11,11 +11,11 @@ sharp.concurrency(1); // Process one Sharp operation at a time per worker
 // Cache for resized reference images to avoid repeated disk I/O and processing
 const imageCache = new Map<string, Buffer>();
 
-async function getCachedResizedImage(framePath: string, width: number, height: number): Promise<Buffer> {
-    const cacheKey = `${framePath}:${width}x${height}`;
+async function getCachedResizedImage(nearestImagePath: string, width: number, height: number): Promise<Buffer> {
+    const cacheKey = `${nearestImagePath}:${width}x${height}`;
 
     if (!imageCache.has(cacheKey)) {
-        const resizedBuffer = await sharp(framePath)
+        const resizedBuffer = await sharp(nearestImagePath)
             .resize(width, height)
             .toBuffer();
         imageCache.set(cacheKey, resizedBuffer);
@@ -85,7 +85,7 @@ expose(async function processFrame({
                 // Prepare buffer slice for this tile (grayscale, so channels = 1)
                 const rowStride = width;
                 const tileSize = tileWidth * tileHeight;
-                const tileRaw = Buffer.allocUnsafe(tileSize);
+                const tileRaw = Buffer.alloc(tileSize);
 
                 // Extract tile data row by row from the full frame grayscale buffer
                 for (let row = 0; row < tileHeight; row++) {
@@ -116,12 +116,6 @@ expose(async function processFrame({
                 }
 
                 completedTiles++;
-                // Log progress every 20%
-                const p = Math.floor((completedTiles/totalTiles)*5);
-                if (p !== lastLogged) {
-                    lastLogged = p;
-                    console.log(`  ${(completedTiles/totalTiles*100).toFixed(0)}% of tiles`);
-                }
             }
         }
 
