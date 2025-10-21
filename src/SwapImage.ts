@@ -8,8 +8,6 @@ export default class SwapImage extends BaseImage {
         super(imagePath, imageOutPath);
     }
 
-
-
     async transformAndOutput() {
         const imageBuffer = await fs.promises.readFile(this.imagePath);
 

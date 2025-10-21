@@ -67,9 +67,9 @@ export default class Frame extends BaseImage {
             // Queue the frame processing task
             await Frame.workerPool.queue(async processFrame => {
                 await processFrame({
-                    imagePath: this.imagePath,
-                    imageOutPath: this.imageOutPath,
-                    TILE_SIZE: 140,
+                    framePath: this.imagePath,
+                    frameOutPath: this.imageOutPath,
+                    TILE_SIZE: 110,
                     imageMapArray
                 })
             });

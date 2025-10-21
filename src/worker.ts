@@ -5,19 +5,17 @@ import sharp from 'sharp';
 
 import { deriveMeanBrightness, matchNearestImage } from './helpers.ts';
 
-// Limit Sharp's internal concurrency to prevent resource exhaustion
-// With multiple workers, we need to be conservative
+
 sharp.concurrency(1); // Process one Sharp operation at a time per worker
-sharp.cache({ memory: 50, files: 0, items: 20 }); // Limit cache size
 
 // Cache for resized reference images to avoid repeated disk I/O and processing
 const imageCache = new Map<string, Buffer>();
 
-async function getCachedResizedImage(imagePath: string, width: number, height: number): Promise<Buffer> {
-    const cacheKey = `${imagePath}:${width}x${height}`;
+async function getCachedResizedImage(framePath: string, width: number, height: number): Promise<Buffer> {
+    const cacheKey = `${framePath}:${width}x${height}`;
 
     if (!imageCache.has(cacheKey)) {
-        const resizedBuffer = await sharp(imagePath)
+        const resizedBuffer = await sharp(framePath)
             .resize(width, height)
             .toBuffer();
         imageCache.set(cacheKey, resizedBuffer);
@@ -27,22 +25,22 @@ async function getCachedResizedImage(imagePath: string, width: number, height: n
 }
 
 expose(async function processFrame({
-    imagePath,
-    imageOutPath,
+    framePath,
+    frameOutPath,
     TILE_SIZE,
     imageMapArray
 }: {
-    imagePath: string;
-    imageOutPath: string;
+    framePath: string;
+    frameOutPath: string;
     TILE_SIZE: number;
     imageMapArray: Array<[number, string]>;
 }) {
-    let grayscaleImage;
-    let processedImage;
+    let grayscaleImage: sharp.Sharp | undefined;;
+    let processedImage: sharp.Sharp | undefined;
 
     try {
         // Read frame from disk
-        const imageBuffer = await fs.promises.readFile(imagePath);
+        const imageBuffer = await fs.promises.readFile(framePath);
         const metadata = await sharp(imageBuffer).metadata();
         const { width, height } = metadata;
 
@@ -50,10 +48,11 @@ expose(async function processFrame({
             throw new Error("Failed to get image dimensions.");
         }
 
-        // Precompute grayscale once with error handling
+        // Apply high contrast to the original frame BEFORE processing
+        // This expands the brightness range to utilize more swap images
         grayscaleImage = sharp(imageBuffer)
-            .grayscale()
-            .linear(2.0, -80);
+            .linear(1.2, -80)  // Increase contrast: multiply by 2.0, subtract 80
+            .grayscale();
 
         const grayscalePngBuffer = await grayscaleImage.raw().toBuffer();
 
@@ -76,7 +75,6 @@ expose(async function processFrame({
         let completedTiles = 0;
         let lastLogged = 0;
 
-        // Process tiles sequentially - parallelism comes from multiple workers processing different frames
         for (let tileY = 0; tileY < tilesY; tileY++) {
             for (let tileX = 0; tileX < tilesX; tileX++) {
                 const x = tileX * TILE_SIZE;
@@ -84,10 +82,9 @@ expose(async function processFrame({
                 const tileWidth = Math.min(TILE_SIZE, width - x);
                 const tileHeight = Math.min(TILE_SIZE, height - y);
 
-                // Prepare buffer slice for this tile
-                const channelsCount = 1; // grayscale
-                const rowStride = width * channelsCount;
-                const tileSize = tileWidth * tileHeight * channelsCount;
+                // Prepare buffer slice for this tile (grayscale, so channels = 1)
+                const rowStride = width;
+                const tileSize = tileWidth * tileHeight;
                 const tileRaw = Buffer.allocUnsafe(tileSize);
 
                 // Extract tile data row by row from the full frame grayscale buffer
@@ -95,8 +92,8 @@ expose(async function processFrame({
                     grayscalePngBuffer.copy(
                         tileRaw,
                         row * tileWidth,
-                        (y + row) * rowStride + x * channelsCount,
-                        (y + row) * rowStride + (x + tileWidth) * channelsCount
+                        (y + row) * rowStride + x,
+                        (y + row) * rowStride + (x + tileWidth)
                     );
                 }
 
@@ -128,6 +125,7 @@ expose(async function processFrame({
             }
         }
 
+
         console.log(`  Applying ${compositeOperations.length} composite operations...`);
         console.log(`  Match rate: ${compositeOperations.length}/${totalTiles} tiles (${Math.round(compositeOperations.length/totalTiles*100)}%)`);
 
@@ -136,9 +134,9 @@ expose(async function processFrame({
             processedImage = processedImage.composite(compositeOperations);
         }
         console.log("  Saving processed frame...");
-        await processedImage.png().toFile(imageOutPath);
+        await processedImage.png().toFile(frameOutPath);
     } catch (e) {
-        console.error(`Failed to process frame ${imagePath}:`, e);
+        console.error(`Failed to process frame ${framePath}:`, e);
         throw e;
     } finally {
         // Clean up Sharp instances to prevent memory leaks

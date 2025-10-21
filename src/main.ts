@@ -23,8 +23,8 @@ const resetDirectories = async () => {
     await fs.promises.mkdir(FRAMES_OUT_DIR);
 
     // Reset video out dir
-    await fs.promises.rm(VIDEO_OUT, { recursive: true, force: true });
-    await fs.promises.mkdir(VIDEO_OUT);
+    await fs.promises.rm(IMAGES_OUT_DIR, { recursive: true, force: true });
+    await fs.promises.mkdir(IMAGES_OUT_DIR);
 }
 
 const processSwapImages = async (): Promise<Map<number, string>> => {
@@ -125,7 +125,7 @@ const processVideo = async () => {
         const processedFrameFiles = await fs.promises.readdir(FRAMES_OUT_DIR);
         const validFrames = processedFrameFiles.filter(f => f.endsWith('.png'));
 
-        console.log(`\n🎬 Creating video from ${validFrames.length} processed frames...`);
+        console.log(`Creating video from ${validFrames.length} processed frames...`);
 
         if (validFrames.length === 0) {
             console.error('❌ No processed frames found! Cannot create video.');
@@ -168,18 +168,11 @@ const processVideo = async () => {
                     reject(err);
                 });
 
-            // Kill ffmpeg if it's taking too long or hanging
-            const timeout = setTimeout(() => {
-                console.error('\n⏱️  FFmpeg encoding timed out after 5 minutes');
-                command.kill('SIGKILL');
-                reject(new Error('FFmpeg encoding timeout'));
-            }, 5 * 60 * 1000); // 5 minute timeout
-
-            command.on('end', () => clearTimeout(timeout));
-            command.on('error', () => clearTimeout(timeout));
-
             command.save(path.join(VIDEO_OUT, 'artistic_video.mp4'));
+            command.kill('SIGKILL');
         });
+
+        await resetDirectories();
     } catch (e) {
         throw e;
     }
